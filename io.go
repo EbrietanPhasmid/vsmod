@@ -80,22 +80,6 @@ func downloadFile(rawUrl string, dest string, bar *mpb.Bar) error {
 	return err
 }
 
-// TODO : make `CleanupOldMods` retain functional files present in the modpack.
-// have it only eliminate redundant files.
-func CleanupOldMods(packDir string, mp Modpack) error {
-	// files, err := os.ReadDir(packDir)
-	// if err != nil {
-	// 	return err
-	// }
-
-	// allowed := make(map[string]bool)
-	// for _, m := range mp.Mods {
-	//  ......
-	// }
-
-	return os.RemoveAll(packDir)
-}
-
 func copyFile(src, dst string) error {
 	err := os.Link(src, dst)
 	return err

@@ -188,7 +188,7 @@ func (i *PackInstaller) sync(t *ModTask) error {
 
 	bar := i.Progress.AddBar(0,
 		mpb.PrependDecorators(decor.Name(t.Source.Name, decor.WC{W: 24, C: decor.DindentRight})),
-		mpb.AppendDecorators(decor.OnComplete(decor.CountersKiloByte("% .2f / % .2f", decor.WC{W: 18}), fmt.Sprintf("%sOK%s", CGreen, CReset))),
+		mpb.AppendDecorators(decor.OnComplete(decor.CountersKiloByte("% .2f / % .2f", decor.WC{W: 18}), fmt.Sprintf("%sDONE%s", CGreen, CReset))),
 	)
 
 	isNewDownload := false
