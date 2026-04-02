@@ -33,7 +33,7 @@ func printSummary(total, dl, cached int, size int64, warnings int, duration time
 	fmt.Println("---------------------------------")
 	fmt.Printf(" Total Mods:     %d\n", total)
 	fmt.Printf(" Downloaded:     %s%d%s\n", CGreen, dl, CReset)
-	fmt.Printf(" From Cache:     %s%d%s\n", CYellow, cached, CReset)
+	fmt.Printf(" From Cache:     %s%d%s\n", CBlue, cached, CReset)
 	fmt.Printf(" Total Size:     %.2f MB\n", float64(size)/(1024*1024))
 	fmt.Printf(" Warnings:       %s%d%s\n", CYellow, warnings, CReset)
 	fmt.Printf(" Time Elapsed:   %v\n", duration)
