@@ -20,6 +20,18 @@ var versionCmd = &cobra.Command{
 	},
 }
 
+var clearAllCmd = &cobra.Command{
+	Use:   "all",
+	Short: "Purges the .vsmod directory",
+	Run: func(cmd *cobra.Command, args []string) {
+		err := os.RemoveAll(STORAGE_PATH)
+		if err != nil {
+			fmt.Printf("%sError: %v%s\n", CRed, err, CReset)
+			return
+		}
+	},
+}
+
 var installCmd = &cobra.Command{
 	Use:   "install [toml file]",
 	Short: "Install a modpack from a TOML file",

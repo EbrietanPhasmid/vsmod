@@ -18,11 +18,12 @@ func init() {
 }
 
 func main() {
-	clearCmd.AddCommand(clearCacheCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(installCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(clearCmd)
+	clearCmd.AddCommand(clearCacheCmd)
+	clearCmd.AddCommand(clearAllCmd)
 	rootCmd.AddCommand(linkCmd)
 	rootCmd.Execute()
 }
