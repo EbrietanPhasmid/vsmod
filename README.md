@@ -1,85 +1,92 @@
 # vsmod 
-`vsmod` is a CLI-based mod management utility for Vintage Story, developed in Go. It provides deterministic modpack environments through a global content-addressable storage (CAS) model and filesystem abstraction via symbolic links.
+`vsmod` is a high-performance CLI mod manager for Vintage Story, engineered in Go. It provides deterministic, near-instantaneous environment switching through a global content-addressable storage (CAS) model and zero-copy filesystem linking.
 
-## 1. Architectural Overview
+## 1. Technical Architecture
 
-### 1.1 Filesystem Hierarchy
-The tool manages state within a dedicated storage directory (default: `~/.vsmod`).
+### 1.1 Storage Strategy
+The tool decouples mod data from the game directory to maintain a clean system state within `~/.vsmod`.
 
-* **Global Cache (`~/.vsmod/cache/`)**: A persistent repository for unique mod binaries. Naming convention: `{mod_slug}_{version}_{original_filename}`.
-* **Pack Storage (`~/.vsmod/packs/`)**: Contains discrete, isolated directories for each modpack. Each pack directory is a "resolved" state of a TOML manifest.
-* **Game Integration (Symlinking)**: `vsmod` takes ownership of the `VintagestoryData/Mods` path. 
-    * **First Run**: If a physical `Mods` directory exists, it is moved to `Mods.backup`.
-    * **Linking**: `VintagestoryData/Mods` is created as a symbolic link pointing to a specific child directory in `~/.vsmod/packs/`. This allows for near-instantaneous switching between modpacks without moving bulk data.
+* **Metadata Registry (`registry.json`)**: A local cache of Mod DB API responses. This enables **"Fast Path"** execution by bypassing network requests for known mod/version pairs.
+* **Global Cache (`/cache/`)**: The Source of Truth for unique mod binaries.
+* **Pack Storage (`/packs/`)**: Discrete directories representing the resolved state of a TOML manifest.
+* **Zero-Copy Hardlinking**: Instead of standard file copying, `vsmod` makes use of hard links to point files from the global cache to the pack folder. This is an O(1) operation that consumes no additional disk space.
 
 ### 1.2 Execution Pipeline
-1.  **Manifest Parsing**: Decodes TOML and validates schema requirements.
-2.  **API Resolution**: Queries `https://mods.vintagestory.at/api/mod/{slug}` to retrieve release metadata and verify version availability.
-3.  **Compatibility Analysis**: Performs prefix-based version matching (e.g., Game Version `1.21` satisfies a mod tagged for `1.21.6`).
-4.  **Concurrent Retrieval**: Utilizes a worker pool (semaphore-gated) to download assets into the Global Cache.
-5.  **Environment Mutation**: Populates the local pack directory from the cache and performs an atomic swap of the `Mods` symlink.
+1.  **Registry Lookup**: Scans the local registry for mod metadata to avoid API latency.
+2.  **Lazy Compatibility Heuristic**: Compares cached game versions against the target. If a **Major/Minor** mismatch is detected, it triggers an isolated API call to fetch version suggestions.
+3.  **Parallel Sync**: Uses a semaphore-gated worker pool to download missing assets into the cache.
+4.  **Conservative Cleanup**: Prunes files from the pack directory that are no longer present in the TOML, ensuring the environment remains lean without full re-installs.
+5.  **Atomic Symlinking**: Swaps the game's `Mods` directory for a symbolic link pointing to the desired pack.
 
 ---
 
 ## 2. Command Reference
 
-### `install [path/to/manifest.toml]`
-Syncs the specified manifest to the local filesystem.
-* **Sync Logic**: Checks the global cache via `os.Stat`. Only missing assets are requested from the API.
-* **IO Operations**: Files are copied/linked from the global cache to the specific pack directory to ensure environment isolation.
+### `vsmod install [file.toml]`
+Synchronizes your local filesystem to match a modpack manifest.
+* **How it works**: It audits your cache, downloads what’s missing, and links the results into a dedicated pack folder.
+* **Performance**: Achieves high speeds (<1s) for cached packs by utilizing the local metadata registry.
+* **First Run**: If your game has a physical `Mods` folder, `vsmod` safely moves it to `Mods.backup` before creating the initial link.
 
-### `link [modpack_name]`
-Updates the `VintagestoryData/Mods` symlink to point to an existing directory in `~/.vsmod/packs/`. 
-* **Validation**: Errors gracefully if the requested pack has not been installed.
+### `vsmod link [pack_name]` 
+Instantly changes which modpack the game sees.
+* **Usage**: `vsmod link MySurvivalServer`
+* **Why**: It simply updates a symlink. There is no file moving or copying involved; the change is effective the moment you launch the game.
 
-### `link list`
-Queries `~/.vsmod/packs/` and identifies the currently active pack.
-* **State Detection**: Uses `os.Readlink` on the game's `Mods` path to determine the "Source of Truth" for the active environment.
-* **UI**: Active packs are denoted with a `+` marker and highlighted in green.
+### `vsmod list`
+Displays all installed packs and identifies the active environment.
+* **UI**: The currently linked pack is highlighted in **Cyan** with a `+` marker.
+* **Accuracy**: It queries the filesystem's `readlink` state to ensure the UI represents the actual Source of Truth.
 
-### `clear cache`
-Recursively removes all files within `~/.vsmod/cache/`. This is a destructive operation used to reclaim disk space.
+### `vsmod clear [cache | all]`
+Reclaims disk space by removing stored data.
+* **cache**: Cleans out the binary downloads in `~/.vsmod/cache/`.
+* **all**: Destroys the entire `~/.vsmod` directory, including the registry and all pack folders.
 
 ---
 
 ## 3. Manifest Schema (TOML)
 
-| Field | Type | Description |
-| :--- | :--- | :--- |
-| `name` | String | Unique identifier for the modpack (used for folder naming). |
-| `game_version` | String | Target Vintage Story version (used for compatibility logic). |
-| `[[mods]]` | Array | A collection of mod objects. |
-| `mods.name` | String | The slug of the mod found in the Mod DB URL. |
-| `mods.version` | String | The specific version string to pin. |
+```toml
+name = "ExamplePack"
+game_version = "1.21.1"
+
+[[mods]]
+name = "carryon"
+version = "1.13.0"
+
+[[mods]]
+name = "prospecttogether"
+version = "1.3.0"
+```
 
 ---
 
-## 4. Technical Constraints & Error Handling
+## 4. Performance & Constraints
 
-* **Network**: Uses `http.Client` with a custom `User-Agent` to bypass CDN filtering and satisfy API requirements.
-* **Concurrency**: Implements `sync.WaitGroup` and a buffered channel semaphore (default: 4) to limit thread saturation during IO-bound tasks.
-* **Color Space**: Utilizes ANSI escape sequences. Standard "Blue" (34) is substituted with "Cyan" (36) or "Bright Blue" (94) for high visibility across various terminal themes.
+* **Concurrency**: Optimized for 4 concurrent workers to maximize I/O throughput without triggering Mod DB rate limits.
+* **Network Optimization**: Uses persistent HTTP connections (Keep-Alive) to reduce TLS handshake overhead.
+* **SemVer Logic**: Implements a "Patch-Agnostic" warning system. It only performs expensive network-driven version suggestions if a breaking version jump is detected.
 * **Exit Codes**:
     * `0`: Success.
-    * `1`: Fatal initialization or path permission error.
-    * `non-zero`: API failure, network timeout, or nil-pointer prevention during file stat.
+    * `1`: Fatal error (Permissions, API downtime).
+    * `2`: Manifest validation or version mismatch error.
 
 ---
 
 ## 5. Development Roadmap
 
-### Phase 1: Core Stability (Completed)
-- [x] Concurrent worker pool for downloads.
-- [x] Global CAS caching and symlink-based environment switching.
-- [x] Prefix-based semantic version matching.
-- [x] Graceful error handling for missing directories and nil pointers.
+### Phase 1: Core Performance (Completed)
+- [x] Concurrent worker pool & Global CAS.
+- [x] Symlink-based environment hotswapping.
+- [x] **Hardlinking** for zero-copy file distribution.
+- [x] **Local Metadata Registry** for sub-second execution.
 
-### Phase 2: Manifest & Local Registry (Active)
-- [ ] **CLI Manifest Creator**: Commands `vsmod new [name]` and `vsmod add [slug]` to programmatically generate and edit TOML files in the local registry.
-- [ ] **Conservative Cleanup**: Logic to prune redundant files from a pack directory (e.g., after a mod is removed from TOML) without destroying the entire directory state.
-- [ ] **Integrity Verification**: SHA-256 checksum validation for cached assets.
+### Phase 2: CLI UX (Active)
+- [x] **Conservative Cleanup**: Logic to prune removed mods without full re-downloads.
+- [ ] **Interactive Add/Remove**: Update TOML manifests directly via the CLI.
+- [ ] **Init Command**: Bootstrap a new manifest from the current game state.
 
-### Phase 3: Advanced Automation
-- [ ] **Mod DB Search**: Integrated CLI search to find mod slugs and versions without a browser.
+### Phase 3: Intelligence (Backlog)
 - [ ] **Dependency Resolution**: Recursive logic to identify and fetch required library mods (e.g., `CommonLib`).
-- [ ] **Multi-Instance Support**: Allow arbitrary mapping of game data paths for compatibility with third-party launchers.
+- [ ] **Mod DB Search**: Integrated CLI search to find mod slugs and versions.
