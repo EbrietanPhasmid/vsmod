@@ -1,4 +1,4 @@
-![vsmod installing a modpack](#)
+![vsmod installing a modpack](https://github.com/EbrietanPhasmid/vsmod/blob/master/vsmod.gif)
 # vsmod 
 `vsmod` is a CLI-based mod management utility for Vintage Story, developed in Go. It provides deterministic modpack environments through a global content-addressable storage (CAS) model and filesystem abstraction via symbolic links.
 
