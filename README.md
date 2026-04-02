@@ -1,4 +1,4 @@
-<img src="https://github.com/EbrietanPhasmid/vsmod/blob/master/vsmod.gif" alt="vsmod downloading a modpack..." width="300" height="200">
+<img src="https://github.com/EbrietanPhasmid/vsmod/blob/master/vsmod.gif" alt="vsmod downloading a modpack..." width="100%" height="auto">
 # vsmod 
 `vsmod` is a CLI-based mod management utility for Vintage Story, developed in Go. It provides deterministic modpack environments through a global content-addressable storage (CAS) model and filesystem abstraction via symbolic links.
 
