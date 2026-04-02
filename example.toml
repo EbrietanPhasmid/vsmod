@@ -1,0 +1,19 @@
+name = "MyPack"
+version = "1.0.0"
+game_version = "1.21.6"
+
+[[mods]]
+name = "aculinaryartillery"
+version = "2.0.0-dev.11"
+
+[[mods]]
+name = "carryon"
+version = "1.13.0-pre.3"
+
+[[mods]]
+name = "playercorpse"
+version = "1.12.0"
+
+[[mods]]
+name = "commonlib"
+version = "1.12.0"
