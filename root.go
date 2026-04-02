@@ -43,7 +43,8 @@ var installCmd = &cobra.Command{
 			fmt.Printf("%sError: %v%s\n", CRed, err, CReset)
 			return
 		}
-		if err := DownloadModPack(*pack); err != nil {
+		installer := NewPackInstaller(*pack)
+		if err := installer.Install(); err != nil {
 			fmt.Printf("%sError: %v%s\n", CRed, err, CReset)
 		}
 	},

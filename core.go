@@ -15,319 +15,307 @@ import (
 	"github.com/vbauerster/mpb/v8/decor"
 )
 
-type ModStats struct {
+type InstallStatus struct {
 	sync.Mutex
-
-	downloaded int
-
-	cached int
-
-	totalBytes int64
+	Downloaded int
+	Cached     int
+	TotalBytes int64
+	Warnings   []string
 }
 
-// Clears the modpack's directory of invalid files and creates it if empty.
-func preparePackDir(dir string, mp Modpack) error {
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create pack directory: %w", err)
-	}
-	// validFiles := make(map[string]bool)
-	for _, m := range mp.Mods {
-		// Note: We don't have the exact filename yet because that
-		// comes from the Registry/API. However, we can approximate
-		// or, better yet, we just clean up based on the Slug.
-		// For now, let's look at the actual files in the directory.
-		_ = m // Placeholder
-	}
+// PackInstaller handles the orchestration of the installation lifecycle.
+type PackInstaller struct {
+	Pack       Modpack
+	Registry   Registry
+	Progress   *mpb.Progress
+	Stats      *InstallStatus
+	PackDir    string
+	regMu      sync.Mutex
+	regChanged bool
+}
 
-	entries, err := os.ReadDir(dir)
-	if err != nil {
+// ModTask represents a single unit of work in the pipeline.
+type ModTask struct {
+	Source   Mod
+	Meta     *RegistryEntry
+	Warning  string
+	IsRemote bool
+}
+
+func NewPackInstaller(mp Modpack) *PackInstaller {
+	return &PackInstaller{
+		Pack:     mp,
+		Registry: LoadRegistry(),
+		Progress: mpb.New(mpb.WithWidth(64)),
+		Stats:    &InstallStatus{},
+		PackDir:  filepath.Join(STORAGE_PATH, "packs", mp.Name),
+	}
+}
+
+func (i *PackInstaller) Install() error {
+	start := time.Now()
+
+	// 1. Prepare Filesystem
+	if err := i.prepareFilesystem(); err != nil {
 		return err
 	}
 
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
+	fmt.Printf("%s%s▶ Installing modpack:%s %s\n\n", CBold, CCyan, CReset, i.Pack.Name)
 
-		found := false
-		for _, m := range mp.Mods {
-			if strings.HasPrefix(entry.Name(), m.Name) {
-				found = true
-				break
-			}
-		}
-
-		if !found {
-			target := filepath.Join(dir, entry.Name())
-			if err := os.Remove(target); err != nil {
-				return fmt.Errorf("failed to prune old mod %s: %w", entry.Name(), err)
-			}
-		}
-	}
-
-	return nil
-}
-
-func DownloadModPack(mp Modpack) error {
-	start := time.Now()
-	reg := LoadRegistry()
-	regChanged := false
-	var regMu sync.Mutex
-
-	packDir := filepath.Join(STORAGE_PATH, "packs", mp.Name)
-	preparePackDir(packDir, mp)
-
-	p := mpb.New(mpb.WithWidth(64))
+	// 2. Parallel Pipeline Execution
 	var wg sync.WaitGroup
-	var stats ModStats
-	var warnings []string
-	var warnMu sync.Mutex
-	errChan := make(chan error, len(mp.Mods))
 	sem := make(chan struct{}, 4)
+	errChan := make(chan error, len(i.Pack.Mods))
 
-	fmt.Printf("%s%s▶ Installing modpack:%s %s\n\n", CBold, CCyan, CReset, mp.Name)
-
-	for _, mod := range mp.Mods {
+	for _, m := range i.Pack.Mods {
 		wg.Add(1)
-		sem <- struct{}{}
-		go func(m Mod) {
+		go func(mod Mod) {
 			defer wg.Done()
+			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			meta, wasFromApi, warn, err := resolveModMetadata(m, mp.GameVersion, reg, &regMu)
-			if err != nil {
+			if err := i.processMod(mod); err != nil {
 				errChan <- err
-				return
 			}
-			if wasFromApi {
-				regChanged = true
-			}
-			if warn != "" {
-				warnMu.Lock()
-				warnings = append(warnings, warn)
-				warnMu.Unlock()
-			}
-
-			_, err = syncModToPack(m, meta, packDir, p, &stats)
-			if err != nil {
-				errChan <- err
-				return
-			}
-		}(mod)
+		}(m)
 	}
 
 	wg.Wait()
-	p.Wait()
-	if regChanged {
-		reg.Save()
+	i.Progress.Wait()
+
+	// 3. Post-Process State
+	if i.regChanged {
+		i.Registry.Save()
 	}
 
 	close(errChan)
-	fmt.Println()
-	for _, w := range warnings {
-		fmt.Println(w)
-	}
+	i.printOutput(start)
 
 	if len(errChan) > 0 {
 		return <-errChan
 	}
 
-	duration := time.Since(start).Round(time.Millisecond)
-	printSummary(len(mp.Mods), stats.downloaded, stats.cached, stats.totalBytes, len(warnings), duration)
-
-	return LinkModPack(packDir)
+	return LinkModPack(i.PackDir)
 }
 
-func resolveModMetadata(m Mod, targetGameVer string, reg Registry, mu *sync.Mutex) (*RegistryEntry, bool, string, error) {
-	key := regKey(m.Name, m.Version)
-
-	mu.Lock()
-	entry, found := reg[key]
-	mu.Unlock()
-
-	if found {
-		warn := checkCompatibility(m, targetGameVer, entry.GameVersions)
-		if warn == "" {
-			return &entry, false, warn, nil
-		}
-
-		shouldFetch := false
-
-		for _, gv := range entry.GameVersions {
-			if isMajorMismatch(gv, targetGameVer) {
-				shouldFetch = true
-			}
-
-		}
-
-		if shouldFetch {
-			warn = fetchSuggestionLocally(m, targetGameVer, entry.GameVersions)
-		}
-		return &entry, false, warn, nil
+func (i *PackInstaller) processMod(m Mod) error {
+	// State 1: Resolve Metadata
+	task, err := i.resolve(m)
+	if err != nil {
+		return err
 	}
 
+	if task.Warning != "" {
+		i.Stats.Lock()
+		i.Stats.Warnings = append(i.Stats.Warnings, task.Warning)
+		i.Stats.Unlock()
+	}
+
+	// State 2: Sync Filesystem
+	return i.sync(task)
+}
+
+func (i *PackInstaller) resolve(m Mod) (*ModTask, error) {
+	key := regKey(m.Name, m.Version)
+	task := &ModTask{Source: m}
+
+	i.regMu.Lock()
+	entry, found := i.Registry[key]
+	i.regMu.Unlock()
+
+	if found {
+		task.Meta = &entry
+		task.Warning = i.checkCompatibility(m, entry.GameVersions, nil)
+
+		// Lazy-fetch suggestion if major mismatch
+		if task.Warning != "" {
+			for _, gv := range entry.GameVersions {
+				if isMajorMismatch(gv, i.Pack.GameVersion) {
+					task.Warning = i.fetchSuggestionLocally(m, entry.GameVersions)
+					break
+				}
+			}
+		}
+		return task, nil
+	}
+
+	// Cold Path: Fetch from API
 	resp, err := http.Get(fmt.Sprintf(BaseApiSlugUrl, m.Name))
 	if err != nil {
-		return nil, false, "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
-	var dbData ModDBResponse
-	if err := json.NewDecoder(resp.Body).Decode(&dbData); err != nil {
-		return nil, false, "", err
+	var db ModDBResponse
+	if err := json.NewDecoder(resp.Body).Decode(&db); err != nil {
+		return nil, err
 	}
 
-	var target *ModRelease
-	for i := range dbData.Mod.Releases {
-		if dbData.Mod.Releases[i].Modversion == m.Version {
-			target = &dbData.Mod.Releases[i]
+	var release *ModRelease
+	for idx := range db.Mod.Releases {
+		if db.Mod.Releases[idx].Modversion == m.Version {
+			release = &db.Mod.Releases[idx]
 			break
 		}
 	}
 
-	if target == nil {
-		return nil, false, "", fmt.Errorf("version %s not found for %s", m.Version, m.Name)
+	if release == nil {
+		return nil, fmt.Errorf("version %s not found for %s", m.Version, m.Name)
 	}
 
-	warn := checkCompatibility(m, targetGameVer, target.GameVersions)
-
-	newEntry := RegistryEntry{
+	task.Meta = &RegistryEntry{
 		ModSlug:      m.Name,
 		Version:      m.Version,
-		MainFile:     target.MainFile,
-		GameVersions: target.GameVersions,
+		MainFile:     release.MainFile,
+		GameVersions: release.GameVersions,
 		LastUpdated:  time.Now(),
 	}
+	task.IsRemote = true
+	task.Warning = i.checkCompatibility(m, release.GameVersions, db.Mod.Releases)
 
-	mu.Lock()
-	reg[key] = newEntry
-	mu.Unlock()
+	i.regMu.Lock()
+	i.Registry[key] = *task.Meta
+	i.regChanged = true
+	i.regMu.Unlock()
 
-	return &newEntry, true, warn, nil
+	return task, nil
 }
 
-func syncModToPack(m Mod, meta *RegistryEntry, packDir string, p *mpb.Progress, stats *ModStats) (bool, error) {
-	fileName := filepath.Base(meta.MainFile)
-	cacheFile := filepath.Join(CACHE_PATH, fmt.Sprintf("%s_%s_%s", m.Name, m.Version, fileName))
-	targetFile := filepath.Join(packDir, fileName)
+func (i *PackInstaller) sync(t *ModTask) error {
+	fileName := filepath.Base(t.Meta.MainFile)
+	cachePath := filepath.Join(CACHE_PATH, fmt.Sprintf("%s_%s_%s", t.Source.Name, t.Source.Version, fileName))
+	targetPath := filepath.Join(i.PackDir, fileName)
 
-	bar := p.AddBar(0,
-		mpb.PrependDecorators(decor.Name(m.Name, decor.WC{W: 24, C: decor.DindentRight})),
-		mpb.AppendDecorators(
-			decor.OnComplete(
-				decor.CountersKiloByte("% .2f / % .2f", decor.WC{W: 18}),
-				fmt.Sprintf("%sOK%s", CGreen, CReset),
-			),
-		),
+	bar := i.Progress.AddBar(0,
+		mpb.PrependDecorators(decor.Name(t.Source.Name, decor.WC{W: 24, C: decor.DindentRight})),
+		mpb.AppendDecorators(decor.OnComplete(decor.CountersKiloByte("% .2f / % .2f", decor.WC{W: 18}), fmt.Sprintf("%sOK%s", CGreen, CReset))),
 	)
 
-	downloaded := false
-	if _, err := os.Stat(cacheFile); os.IsNotExist(err) {
-		if err := downloadFile(meta.MainFile, cacheFile, bar); err != nil {
+	isNewDownload := false
+	if _, err := os.Stat(cachePath); os.IsNotExist(err) {
+		if err := downloadFile(t.Meta.MainFile, cachePath, bar); err != nil {
 			bar.Abort(false)
-			return false, err
+			return err
 		}
-		downloaded = true
+		isNewDownload = true
 	}
 
-	fi, _ := os.Stat(cacheFile)
-	bar.SetTotal(fi.Size(), true)
+	info, _ := os.Stat(cachePath)
+	bar.SetTotal(info.Size(), true)
 
-	stats.Lock()
-	stats.totalBytes += fi.Size()
-	if downloaded {
-		stats.downloaded++
+	i.Stats.Lock()
+	i.Stats.TotalBytes += info.Size()
+	if isNewDownload {
+		i.Stats.Downloaded++
 	} else {
-		stats.cached++
+		i.Stats.Cached++
 	}
-	stats.Unlock()
+	i.Stats.Unlock()
 
-	os.Remove(targetFile)
-
-	return downloaded, os.Link(cacheFile, targetFile)
+	os.Remove(targetPath)
+	return os.Link(cachePath, targetPath)
 }
 
-func LinkModPack(packCachePath string) error {
-	info, err := os.Lstat(MOD_PATH)
-	if err == nil {
-		if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-			backupPath := MOD_PATH + ".backup"
-			fmt.Printf("%s! Found existing Mods folder. Moving to %s%s\n", CYellow, backupPath, CReset)
-			os.Rename(MOD_PATH, backupPath)
-		} else {
-			os.Remove(MOD_PATH)
+func (i *PackInstaller) prepareFilesystem() error {
+	if err := os.MkdirAll(i.PackDir, 0755); err != nil {
+		return err
+	}
+	entries, _ := os.ReadDir(i.PackDir)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		match := false
+		for _, m := range i.Pack.Mods {
+			if strings.HasPrefix(entry.Name(), m.Name) {
+				match = true
+				break
+			}
+		}
+		if !match {
+			os.Remove(filepath.Join(i.PackDir, entry.Name()))
 		}
 	}
-
-	err = os.Symlink(packCachePath, MOD_PATH)
-	if err != nil {
-		return fmt.Errorf("failed to link modpack: %w", err)
-	}
-
 	return nil
 }
 
-func checkCompatibility(m Mod, targetGameVer string, modGameVersions []string) string {
-	// If there are no tags, we assume it's a "universal" or legacy mod
-	if len(modGameVersions) == 0 {
-		return ""
+func (i *PackInstaller) printOutput(start time.Time) {
+	fmt.Println()
+	for _, w := range i.Stats.Warnings {
+		fmt.Println(w)
 	}
-
-	// Check for exact or prefix match
-	if slices.Contains(modGameVersions, targetGameVer) {
-		return ""
-	}
-
-	// If we are here, there is a mismatch.
-	warning := fmt.Sprintf("%s! Compatibility Warning: [%s]:%s Version %s is for %v (Pack is %s).",
-		CYellow, m.Name, CReset, m.Version, modGameVersions, targetGameVer)
-
-	return warning
+	duration := time.Since(start).Round(time.Millisecond)
+	printSummary(len(i.Pack.Mods), i.Stats.Downloaded, i.Stats.Cached, i.Stats.TotalBytes, len(i.Stats.Warnings), duration)
 }
 
-func fetchSuggestionLocally(m Mod, targetGameVer string, currentModVersions []string) string {
-	// API call to find a better version
-	resp, err := http.Get(fmt.Sprintf(BaseApiSlugUrl, m.Name))
-	if err != nil {
-		return fmt.Sprintf("%s! Compatibility Warning: [%s] (Failed to fetch suggestions)%s", CYellow, m.Name, CReset)
+// Standard logic remain separate as "Pure Functions"
+func (i *PackInstaller) checkCompatibility(m Mod, versions []string, releases []ModRelease) string {
+	if len(versions) == 0 || slices.Contains(versions, i.Pack.GameVersion) {
+		return ""
 	}
-	defer resp.Body.Close()
+	warn := fmt.Sprintf("%s! Compatibility Warning: [%s]:%s Version %s is for %v (Pack is %s).",
+		CYellow, m.Name, CReset, m.Version, versions, i.Pack.GameVersion)
 
-	var dbData ModDBResponse
-	json.NewDecoder(resp.Body).Decode(&dbData)
-
-	var suggestion string
-	for _, r := range dbData.Mod.Releases {
-		if slices.Contains(r.GameVersions, targetGameVer) {
-			suggestion = r.Modversion
-			break
+	if len(releases) > 0 {
+		for _, r := range releases {
+			if slices.Contains(r.GameVersions, i.Pack.GameVersion) {
+				warn += fmt.Sprintf("\n\t%sSuggestion:%s Try version %s%s%s.", CCyan, CReset, CBold, r.Modversion, CReset)
+				break
+			}
 		}
 	}
+	return warn
+}
 
-	warning := fmt.Sprintf("%s! Compatibility Warning: [%s]:%s Version %s is for %v (Pack is %s).",
-		CYellow, m.Name, CReset, m.Version, currentModVersions, targetGameVer)
-
-	if suggestion != "" {
-		warning += fmt.Sprintf("\n\t%sSuggestion:%s Try version %s%s%s.", CCyan, CReset, CBold, suggestion, CReset)
+func (i *PackInstaller) fetchSuggestionLocally(m Mod, versions []string) string {
+	resp, _ := http.Get(fmt.Sprintf(BaseApiSlugUrl, m.Name))
+	if resp == nil {
+		return ""
 	}
-
-	return warning
+	defer resp.Body.Close()
+	var db ModDBResponse
+	json.NewDecoder(resp.Body).Decode(&db)
+	return i.checkCompatibility(m, versions, db.Mod.Releases)
 }
 
 func isMajorMismatch(v1, v2 string) bool {
-
-	parts1 := strings.Split(v1, ".")
-	parts2 := strings.Split(v2, ".")
-
-	// If we can't parse them properly, assume it's a major change to be safe
-	if len(parts1) < 2 || len(parts2) < 2 {
+	p1, p2 := strings.Split(v1, "."), strings.Split(v2, ".")
+	if len(p1) < 2 || len(p2) < 2 {
 		return true
 	}
+	return p1[0] != p2[0] || p1[1] != p2[1]
+}
 
-	// Compare Major (index 0) and Minor (index 1)
-	if parts1[0] != parts2[0] || parts1[1] != parts2[1] {
-		return true
+func LinkModPack(packCachePath string) error {
+
+	info, err := os.Lstat(MOD_PATH)
+
+	if err == nil {
+
+		if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+
+			backupPath := MOD_PATH + ".backup"
+
+			fmt.Printf("%s! Found existing Mods folder. Moving to %s%s\n", CYellow, backupPath, CReset)
+
+			os.Rename(MOD_PATH, backupPath)
+
+		} else {
+
+			os.Remove(MOD_PATH)
+
+		}
+
 	}
 
-	return false
+	err = os.Symlink(packCachePath, MOD_PATH)
+
+	if err != nil {
+
+		return fmt.Errorf("failed to link modpack: %w", err)
+
+	}
+
+	return nil
+
 }
