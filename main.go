@@ -142,7 +142,7 @@ func DownloadModPack(mp Modpack) error {
 		totalBytes int64
 	}
 
-	packFolderName := fmt.Sprintf("%s_%s", mp.Name, mp.GameVersion)
+	packFolderName := fmt.Sprintf(mp.Name)
 	packDir := filepath.Join(STORAGE_PATH, "packs", packFolderName)
 
 	if err := CleanupOldMods(packDir, mp); err != nil {
@@ -483,11 +483,88 @@ func main() {
 			os.RemoveAll(CACHE_PATH)
 		},
 	}
+	var linkCmd = &cobra.Command{
+		Use:   "link [modpack name]",
+		Short: "Sets the modpack as currently in use",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			packname := args[0]
+			packpath := filepath.Join(STORAGE_PATH, "packs", packname)
 
+			fi, err := os.Stat(packpath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					fmt.Printf("%sError: Modpack '%s' not found in %s%s\n", CRed, packname, packpath, CReset)
+				} else {
+					fmt.Printf("%sError: %v%s\n", CRed, err, CReset)
+				}
+				return
+			}
+
+			if !fi.IsDir() {
+				fmt.Printf("%sError: %s is not a directory%s\n", CRed, packpath, CReset)
+				return
+			}
+
+			if err := LinkModPack(packpath); err != nil {
+				fmt.Printf("%sError linking pack: %v%s\n", CRed, err, CReset)
+				return
+			}
+
+			fmt.Printf("%s✔ Successfully linked modpack: %s%s\n", CGreen, packname, CReset)
+		},
+	}
+
+	var linkListCmd = &cobra.Command{
+		Use:   "list",
+		Short: "List all installed modpacks",
+		Run: func(cmd *cobra.Command, args []string) {
+			packsDir := filepath.Join(STORAGE_PATH, "packs")
+
+			entries, err := os.ReadDir(packsDir)
+			if err != nil {
+				if os.IsNotExist(err) {
+					fmt.Printf("%sNo modpacks found. Install one first!%s\n", CYellow, CReset)
+					return
+				}
+				fmt.Printf("%sError reading packs: %v%s\n", CRed, err, CReset)
+				return
+			}
+
+			activePack := ""
+			currentLink, _ := os.Readlink(MOD_PATH)
+			if err == nil {
+				activePack = filepath.Base((currentLink))
+			}
+
+			fmt.Printf("\n%s%sAvailable Modpacks:%s\n", CBold, CCyan, CReset)
+			fmt.Println("------------------")
+
+			found := false
+			for _, entry := range entries {
+				if entry.IsDir() {
+					var symbol = "•"
+					if activePack == entry.Name() {
+						symbol = "+"
+					}
+					fmt.Printf("  %s%s%s %s\n", CCyan, symbol, CReset, entry.Name())
+					found = true
+				}
+			}
+
+			if !found {
+				fmt.Println("  (No modpack directories found)")
+			}
+			fmt.Println()
+		},
+	}
+
+	linkCmd.AddCommand(linkListCmd)
 	clearCmd.AddCommand(clearCacheCmd)
 	rootCmd.AddCommand(installCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(clearCmd)
+	rootCmd.AddCommand(linkCmd)
 	rootCmd.Execute()
 }
 
