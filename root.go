@@ -81,7 +81,7 @@ var linkCmd = &cobra.Command{
 	},
 }
 
-var linkListCmd = &cobra.Command{
+var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all installed modpacks",
 	Run: func(cmd *cobra.Command, args []string) {
@@ -90,7 +90,7 @@ var linkListCmd = &cobra.Command{
 		entries, err := os.ReadDir(packsDir)
 		if err != nil {
 			if os.IsNotExist(err) {
-				fmt.Printf("%sNo modpacks found. Install one first!%s\n", CYellow, CReset)
+				fmt.Printf("%sNo modpacks found. Install a modpack using the %svsmod install%s command.%s\n", CYellow, CBlue, CYellow, CReset)
 				return
 			}
 			fmt.Printf("%sError reading packs: %v%s\n", CRed, err, CReset)
@@ -121,6 +121,5 @@ var linkListCmd = &cobra.Command{
 		if !found {
 			fmt.Println("  (No modpack directories found)")
 		}
-		fmt.Println()
 	},
 }

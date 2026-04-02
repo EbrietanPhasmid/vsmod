@@ -18,8 +18,8 @@ func init() {
 }
 
 func main() {
-	linkCmd.AddCommand(linkListCmd)
 	clearCmd.AddCommand(clearCacheCmd)
+	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(installCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(clearCmd)
@@ -28,6 +28,7 @@ func main() {
 }
 
 func printSummary(total, dl, cached int, size int64, warnings int, duration time.Duration) {
+	fmt.Println()
 	fmt.Println(CBold + "Installation Summary" + CReset)
 	fmt.Println("---------------------------------")
 	fmt.Printf(" Total Mods:     %d\n", total)

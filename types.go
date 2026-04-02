@@ -1,5 +1,9 @@
 package main
 
+import (
+	"time"
+)
+
 var (
 	VERSION      = "dev-build"
 	STORAGE_PATH = ""
@@ -33,12 +37,31 @@ type (
 	}
 )
 
+type ModRelease struct {
+	ReleaseID    int      `json:"releaseid"`
+	Modversion   string   `json:"modversion"`
+	MainFile     string   `json:"mainfile"`
+	Filename     string   `json:"filename"`
+	Downloads    int      `json:"downloads"`
+	GameVersions []string `json:"tags"`
+	Created      string   `json:"created"`
+}
+
 type ModDBResponse struct {
-	Mod struct {
-		Releases []struct {
-			Modversion   string   `json:"modversion"`
-			MainFile     string   `json:"mainfile"`
-			GameVersions []string `json:"tags"`
-		} `json:"releases"`
+	Status string `json:"status"`
+	Mod    struct {
+		Name     string       `json:"name"`
+		Author   string       `json:"author"`
+		Releases []ModRelease `json:"releases"`
 	} `json:"mod"`
+}
+
+type Registry map[string]RegistryEntry
+
+type RegistryEntry struct {
+	ModSlug      string    `json:"slug"`
+	Version      string    `json:"version"`
+	MainFile     string    `json:"main_file"`
+	GameVersions []string  `json:"game_versions"`
+	LastUpdated  time.Time `json:"last_updated"`
 }

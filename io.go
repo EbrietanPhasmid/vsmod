@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 
 	"github.com/BurntSushi/toml"
 	"github.com/vbauerster/mpb/v8"
@@ -95,18 +97,33 @@ func CleanupOldMods(packDir string, mp Modpack) error {
 }
 
 func copyFile(src, dst string) error {
-	source, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer source.Close()
-
-	destination, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer destination.Close()
-
-	_, err = io.Copy(destination, source)
+	err := os.Link(src, dst)
 	return err
+}
+
+func LoadRegistry() Registry {
+	regPath := filepath.Join(STORAGE_PATH, "registry.json")
+	reg := make(Registry)
+
+	data, err := os.ReadFile(regPath)
+	if err != nil {
+		return reg // Return empty if doesn't exist
+	}
+
+	json.Unmarshal(data, &reg)
+	return reg
+}
+
+func (r Registry) Save() error {
+	regPath := filepath.Join(STORAGE_PATH, "registry.json")
+	data, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(regPath, data, 0644)
+}
+
+// Generate a unique key for the map
+func regKey(slug, version string) string {
+	return fmt.Sprintf("%s@%s", slug, version)
 }
