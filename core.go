@@ -123,6 +123,7 @@ func DownloadModPack(mp Modpack) error {
 	}
 
 	close(errChan)
+	fmt.Println()
 	for _, w := range warnings {
 		fmt.Println(w)
 	}
@@ -278,7 +279,7 @@ func checkCompatibility(m Mod, targetGameVer string, modGameVersions []string) s
 	}
 
 	// If we are here, there is a mismatch.
-	warning := fmt.Sprintf("\n%s! Compatibility Warning: [%s]:%s Version %s is for %v (Pack is %s).",
+	warning := fmt.Sprintf("%s! Compatibility Warning: [%s]:%s Version %s is for %v (Pack is %s).",
 		CYellow, m.Name, CReset, m.Version, modGameVersions, targetGameVer)
 
 	return warning
@@ -288,7 +289,7 @@ func fetchSuggestionLocally(m Mod, targetGameVer string, currentModVersions []st
 	// API call to find a better version
 	resp, err := http.Get(fmt.Sprintf(BaseApiSlugUrl, m.Name))
 	if err != nil {
-		return fmt.Sprintf("\n%s! Compatibility Warning: [%s] (Failed to fetch suggestions)%s", CYellow, m.Name, CReset)
+		return fmt.Sprintf("%s! Compatibility Warning: [%s] (Failed to fetch suggestions)%s", CYellow, m.Name, CReset)
 	}
 	defer resp.Body.Close()
 
@@ -303,7 +304,7 @@ func fetchSuggestionLocally(m Mod, targetGameVer string, currentModVersions []st
 		}
 	}
 
-	warning := fmt.Sprintf("\n%s! Compatibility Warning: [%s]:%s Version %s is for %v (Pack is %s).",
+	warning := fmt.Sprintf("%s! Compatibility Warning: [%s]:%s Version %s is for %v (Pack is %s).",
 		CYellow, m.Name, CReset, m.Version, currentModVersions, targetGameVer)
 
 	if suggestion != "" {
